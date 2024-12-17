@@ -2,7 +2,7 @@
 
 <p id="description">EEG to EMG Transfer Learning for Discrete Hand Gesture Recognition using the EMG-EPN612 dataset.</p>
 
-<h2>Setup:</h2>
+<h2>Setup</h2>
 
 <p>Save the <a href="https://zenodo.org/records/4421500">EMG-EPN612</a> dataset into the "raw_data" folder. The structure should look like this:</p>
 
@@ -29,9 +29,9 @@ raw_data\EMG-EPN612\
 dataset\helpers\h5_converter.py
 ```
 
-<h2>How to run:</h2>
+<h2>How to run</h2>
 
-<p>To start an automated run enter run one of the .ps1 files, depending on the model you want to use</p>
+<p>To start an automated train-test loop run one of the .ps1 files, depending on the model you want to use</p>
 
 ```
 auto_train_lstm.ps1
@@ -45,7 +45,7 @@ auto_train_cnn.ps1
 python -u "main.py"
 ```
 
-<h2>Logging:</h2>
+<h2>Logging</h2>
 
 <p>All results will be logged to your <a href="https://wandb.ai/">wandb</a> account. Use --experiment_name= and --group_name flags to change the name and group (for CV) in wandb.</p>
 

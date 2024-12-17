@@ -22,7 +22,7 @@ class BasicEMGEPN612Dataset(TorchDataset):
     """
     Basic EMG-EPN612 Dataset: loads data from files
     """
-    def __init__(self, grouped_df, fs=200, window_size=0.05, overlap=0.0, max_samples=599, min_samples=76, num_reps=50):
+    def __init__(self, grouped_df, fs=200, window_size=0.05, overlap=0.0, max_samples=599, min_samples=76, num_reps=50, window_mode="rms"):
         """
         @param grouped_df: dataset df grouped by File Path
         @param fs: frequency sample rate in Hz
@@ -30,6 +30,8 @@ class BasicEMGEPN612Dataset(TorchDataset):
         @param overlap: overlap of windows in ms
         @param max_samples: max sample length in dataset (599 for EMG-EPN612)
         """  
+        self.fs = fs
+        self.window_mode = window_mode
         self.window_samples = int(window_size * fs)
         self.step_samples = int(self.window_samples * (1 - overlap))
         self.max_samples = max_samples
@@ -57,7 +59,6 @@ class BasicEMGEPN612Dataset(TorchDataset):
                 labels.extend(sampled["Label"].values)
                 locations.extend(sampled["Location"].values)
                 gestures.append((file_path, sampled["Gesture_Index"].values.tolist()))
-
 
         labels = np.array(labels)
         locations = np.array(locations)
@@ -151,6 +152,57 @@ class BasicEMGEPN612Dataset(TorchDataset):
         
         # return windows tensor of consistent shape and true number of windows (without padding) 
         return torch.tensor(windows_np, dtype=torch.float32), num_windows
+    
+    def get_high_pass_filtered_data(self, emg_data):
+        # pad array of window to max number of windows in dataset to have consistent shapes
+        num_samples = emg_data.shape[1]
+        pad_size = self.max_samples - num_samples
+        if pad_size > 0:
+            padding = np.zeros((emg_data.shape[0], pad_size))
+            emg_data = np.hstack((emg_data, padding))
+        
+        # Ensure emg_data has contiguous memory layout
+        emg_data = emg_data.copy()
+        #print(emg_data.shape)
+        # return windows tensor of consistent shape and true number of windows (without padding) 
+        return torch.tensor(emg_data, dtype=torch.float32), num_samples
+
+    def get_windows_normalized(self, emg_data):
+        # calculate number of windows for data length
+        num_samples = emg_data.shape[1]
+        if num_samples < self.window_samples:
+            num_windows = 1
+        else:
+            num_windows = (num_samples - self.window_samples) // self.step_samples + 1
+
+        windows = []    
+        for i in range(num_windows):
+            # calculate start and end point for window
+            start = i * self.step_samples
+            end = start + self.window_samples
+            
+            # zero-pad window if it's longer than remaining data
+            if end > num_samples:
+                segment = np.pad(emg_data, ((0, 0), (0, end - num_samples)), mode='constant')
+            else:
+                segment = emg_data[:, start:end]
+            # make sure window has correct length
+            segment = segment[:, :self.window_samples]
+            # Normalize each channel to the range [0, 1]
+            min_vals = segment.min(axis=1, keepdims=True)
+            max_vals = segment.max(axis=1, keepdims=True)
+            normalized_segment = (segment - min_vals) / (max_vals - min_vals + 1e-8)  # Add epsilon to avoid division by zero
+            windows.append(normalized_segment)
+        windows_np = np.array(windows) 
+
+        # pad array of window to max number of windows in dataset to have consistent shapes
+        pad_size = self.max_windows - len(windows_np)
+        if pad_size > 0:
+            padding = np.zeros((pad_size, windows_np.shape[1], windows_np.shape[2]))  # Pad with zeros
+            windows_np = np.vstack((windows_np, padding))
+        
+        # return windows tensor of consistent shape and true number of windows (without padding) 
+        return torch.tensor(windows_np, dtype=torch.float32), num_windows
 
     def __getitem__(self, index):
         # Step 1: Fetch file path, gesture index, label and location
@@ -158,8 +210,15 @@ class BasicEMGEPN612Dataset(TorchDataset):
         # Step 2: Load EMG data from h5 file
         emg_data = self.get_emg_data(file_path, gesture_idx, location)
         # Step 3: Create RMS windows and get original length
-        windows, original_length = self.get_windows_rms(emg_data)
-
+        match self.window_mode:
+            case "rms":
+                windows, original_length = self.get_windows_rms(emg_data)
+            case "normalized":
+                windows, original_length = self.get_windows_normalized(emg_data)
+            case "highpass":
+                windows, original_length = self.get_high_pass_filtered_data(emg_data)
+            case _:  # Default case
+                windows, original_length = self.get_windows_rms(emg_data)
         return windows, original_length, label
 
     def __len__(self):
@@ -197,13 +256,13 @@ def get_training_set(config, validation=True):
 
         validation_df = validation_df.groupby("File_Path")
         training_df = training_df.groupby("File_Path")
-        ds_training = BasicEMGEPN612Dataset(training_df, config.sample_freq, config.window_length, config.window_overlap, config.max_samples, config.min_samples, config.n_reps)
-        ds_validation = BasicEMGEPN612Dataset(validation_df, config.sample_freq, config.window_length, config.window_overlap, config.max_samples, config.min_samples)
+        ds_training = BasicEMGEPN612Dataset(training_df, config.sample_freq, config.window_length, config.window_overlap, config.max_samples, config.min_samples, config.n_reps, config.window_mode)
+        ds_validation = BasicEMGEPN612Dataset(validation_df, config.sample_freq, config.window_length, config.window_overlap, config.max_samples, config.min_samples, 50, config.window_mode)
 
         random.setstate(original_state)
         return ds_training, ds_validation
     else:
-        ds_training = BasicEMGEPN612Dataset(grouped, config.sample_freq, config.window_length, config.window_overlap, config.max_samples, config.min_samples, config.n_reps)
+        ds_training = BasicEMGEPN612Dataset(grouped, config.sample_freq, config.window_length, config.window_overlap, config.max_samples, config.min_samples, config.n_reps, config.window_mode)
         return ds_training, None
     
 def get_testing_set(config):
@@ -214,5 +273,5 @@ def get_testing_set(config):
     meta_csv = dataset_config['testing_meta_csv']
     df = pd.read_csv(meta_csv)
     grouped = df.groupby("File_Path")
-    ds_testing = BasicEMGEPN612Dataset(grouped, config.sample_freq, config.window_length, config.window_overlap, config.max_samples, config.min_samples, 25)
+    ds_testing = BasicEMGEPN612Dataset(grouped, config.sample_freq, config.window_length, config.window_overlap, config.max_samples, config.min_samples, 25, config.window_mode)
     return ds_testing

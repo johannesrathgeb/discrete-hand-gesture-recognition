@@ -15,6 +15,7 @@ from helpers import nessi
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 
 from pytorch_lightning import seed_everything
+import gc
 
 class PLModule(pl.LightningModule):
     def __init__(self, config):
@@ -22,12 +23,7 @@ class PLModule(pl.LightningModule):
         self.config = config  # results from argparse, contains all configurations for our experiment
 
         # the baseline model
-        self.model = get_model( n_classes=config.n_classes,
-                                in_channels=config.in_channels,
-                                hidden_size=config.hidden_size,
-                                num_layers=config.num_layers,
-                                dropout=config.dropout
-                               )
+        self.model = get_model(config)
 
         self.label_ids = ['fist', 'noGesture', 'open', 'pinch', 'waveIn', 'waveOut']
 
@@ -51,9 +47,16 @@ class PLModule(pl.LightningModule):
         The specified items are used automatically in the optimization loop (no need to call optimizer.step() yourself).
         :return: optimizer and learning rate scheduler
         """
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.config.lr) 
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=self.config.optimzer_step, gamma=self.config.optimizer_gamma)
-        return [optimizer], [scheduler]
+        if self.config.optimizer == "adamw":
+            optimizer = torch.optim.AdamW(self.parameters(), lr=self.config.lr) 
+        else:
+            optimizer = torch.optim.Adam(self.parameters(), lr=self.config.lr) 
+        
+        if self.config.scheduler == "step":
+            scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=self.config.optimzer_step, gamma=self.config.optimizer_gamma)
+            return [optimizer], [scheduler]
+        else:
+            return optimizer
 
     def training_step(self, train_batch, batch_idx):
         """
@@ -77,10 +80,10 @@ class PLModule(pl.LightningModule):
 
     def validation_step(self, val_batch, batch_idx):
         x, lengths, labels = val_batch
-
         y_hat = self.forward(x, lengths)
-        samples_loss = F.cross_entropy(y_hat, labels, reduction="none")
 
+        samples_loss = F.cross_entropy(y_hat, labels, reduction="none")
+        loss = samples_loss.mean()
         # for computing accuracy
         _, preds = torch.max(y_hat, dim=1)
         n_correct_per_sample = (preds == labels)
@@ -89,7 +92,7 @@ class PLModule(pl.LightningModule):
         accuracy = n_correct.float() / n_pred
 
         results = {
-            'loss': samples_loss.mean(),
+            'loss': loss,
             'accuracy': accuracy
         }
         results = {k: v.cpu() for k, v in results.items()}
@@ -125,8 +128,9 @@ class PLModule(pl.LightningModule):
         #x = self.mel_forward(x)
         #x = x.half()
         y_hat = self.model(x, lengths)
-        samples_loss = F.cross_entropy(y_hat, labels, reduction="none")
 
+        samples_loss = F.cross_entropy(y_hat, labels, reduction="none")
+        loss = samples_loss.mean()
         # for computing accuracy
         _, preds = torch.max(y_hat, dim=1)
         n_correct_per_sample = (preds == labels)
@@ -135,7 +139,7 @@ class PLModule(pl.LightningModule):
         accuracy = n_correct.float() / n_pred
 
         results = {
-            'loss': samples_loss.mean(),
+            'loss': loss,
             'true_labels': labels,
             'predictions': preds,
             'accuracy': accuracy
@@ -183,6 +187,19 @@ class PLModule(pl.LightningModule):
 
         return files, y_hat
 
+class CustomEarlyStopping(EarlyStopping):
+    def __init__(self, monitor="val/acc", min_delta=0.01, patience=5, verbose=True, mode="max", start_epoch=30):
+        super().__init__(monitor=monitor, min_delta=min_delta, patience=patience, verbose=verbose, mode=mode)
+        self.start_epoch = start_epoch
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        # Only apply early stopping after start_epoch
+        if trainer.current_epoch < self.start_epoch:
+            return
+        
+        # Call the original on_validation_end to handle early stopping
+        super().on_train_epoch_end(trainer, pl_module)
+
 def train(config):
     # logging is done using wandb
     #TODO: change notes and tags
@@ -227,13 +244,15 @@ def train(config):
 
     # create the pytorch lightening trainer by specifying the number of epochs to train, the logger,
     # on which kind of device(s) to train and possible callbacks
-    early_stop_callback = EarlyStopping(monitor="val/acc", min_delta=config.es_delta, patience=config.es_patience, verbose=True, mode="max")
+    #early_stop_callback = EarlyStopping(monitor="val/acc", min_delta=config.es_delta, patience=config.es_patience, verbose=True, mode="max")
+    early_stop_callback = CustomEarlyStopping(monitor="val/acc", min_delta=config.es_delta, patience=config.es_patience, verbose=True, mode="max", start_epoch=config.es_start_epoch)
     trainer = pl.Trainer(max_epochs=config.n_epochs,
                          logger=wandb_logger,
                          accelerator='gpu',
                          devices=1,
                          precision=config.precision,
-                         callbacks=[early_stop_callback, pl.callbacks.ModelCheckpoint(save_last=True)])
+                         callbacks=[early_stop_callback, pl.callbacks.ModelCheckpoint(save_last=True)],
+                         gradient_clip_val=config.gradient_clip)
     # start training and validation for the specified number of epochs
     trainer.fit(pl_module, train_dl, val_dl)
     # final test step
@@ -243,7 +262,6 @@ def train(config):
     del trainer
     del pl_module
     del train_dl, val_dl, test_dl
-    import gc
     gc.collect()
     torch.cuda.empty_cache()
 
@@ -353,13 +371,18 @@ if __name__ == '__main__':
     parser.add_argument('--sample_freq', type=int, default=200)
     parser.add_argument('--window_length', type=float, default=0.025)
     parser.add_argument('--window_overlap', type=float, default=0.0)
+    parser.add_argument('--window_mode', type=str, default="rms")
 
     # optimizers
+    parser.add_argument('--optimizer', type=str, default="adam")
+    parser.add_argument('--scheduler', type=str, default="step")
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--optimzer_step', type=int, default=5)
     parser.add_argument('--optimizer_gamma', type=float, default=0.9)
+    parser.add_argument('--gradient_clip', type=float, default=0.0)
 
     # model
+    parser.add_argument('--model', type=str, default="lstm")
     parser.add_argument('--n_classes', type=int, default=6)  # classification model with 'n_classes' output neurons
     parser.add_argument('--in_channels', type=int, default=8)
     # channels per sample
@@ -377,6 +400,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=1000) 
     parser.add_argument('--es_delta', type=float, default=0.001) 
     parser.add_argument('--es_patience', type=int, default=5) 
+    parser.add_argument('--es_start_epoch', type=int, default=30)
     parser.add_argument('--n_val_users', type=int, default=6)
     parser.add_argument('--n_train_users', type=int, default=300)
     parser.add_argument('--n_reps', type=int, default=50)
