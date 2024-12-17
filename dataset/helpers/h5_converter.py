@@ -32,14 +32,6 @@ def convert_json(dataset_dir, data_subfolder):
             print(f"Data successfully written to {h5_file_path}")
             pbar.update(1)
 
-
-    
-
-    
-
 if __name__ == '__main__':
     convert_json('raw_data/EMG-EPN612/', 'testingJSON/')
-
-# Load JSON and write to HDF5
-
-
+    convert_json('raw_data/EMG-EPN612/', 'trainingJSON/')

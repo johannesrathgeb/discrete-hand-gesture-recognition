@@ -120,5 +120,6 @@ def get_max_length(dataset_dir, data_subfolder):
     print(min_length)
 
 if __name__ == '__main__':
-    #emgepn612('raw_data/EMG-EPN612/', 'testingJSON/', 'emg-epn612-testing-metadata.csv', False)
-    get_max_length('raw_data/EMG-EPN612/', 'testingJSON/') # Training --> 599 76 (1052), Testing --> 599 (1123)
+    emgepn612('raw_data/EMG-EPN612/', 'testingJSON/', 'emg-epn612-testing-metadata.csv', False)
+    emgepn612('raw_data/EMG-EPN612/', 'trainingJSON/', 'emg-epn612-training-metadata.csv', False)
+    #get_max_length('raw_data/EMG-EPN612/', 'testingJSON/') # Training --> 599 76 (1052), Testing --> 599 (1123)
