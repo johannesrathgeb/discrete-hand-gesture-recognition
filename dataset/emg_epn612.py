@@ -213,10 +213,10 @@ class BasicEMGEPN612Dataset(TorchDataset):
         match self.window_mode:
             case "rms":
                 windows, original_length = self.get_windows_rms(emg_data)
-            case "normalized":
-                windows, original_length = self.get_windows_normalized(emg_data)
             case "highpass":
                 windows, original_length = self.get_high_pass_filtered_data(emg_data)
+            case "normalized": # old model used normalized windows
+                windows, original_length = self.get_windows_normalized(emg_data)
             case _:  # Default case
                 windows, original_length = self.get_windows_rms(emg_data)
         return windows, original_length, label
