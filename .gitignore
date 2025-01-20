@@ -1,6 +1,7 @@
 raw_data/grabmyo/
 raw_data/EMG-EPN612/testingJSON
 raw_data/EMG-EPN612/trainingJSON
+raw_data/eeg-motor-movement/
 wandb/
 DCASE24_Task1/
 # Byte-compiled / optimized / DLL files

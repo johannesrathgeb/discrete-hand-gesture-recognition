@@ -8,6 +8,7 @@ import transformers
 import wandb
 
 from dataset.emg_epn612 import get_training_set, get_testing_set
+from dataset.eeg_motor_movement import get_training_set_eeg, get_testing_set_eeg
 from helpers.init import worker_init_fn
 from models.baseline import get_model
 from helpers import nessi
@@ -23,9 +24,11 @@ class PLModule(pl.LightningModule):
         self.config = config  # results from argparse, contains all configurations for our experiment
 
         # the baseline model
-        self.model = get_model(config)
-
-        self.label_ids = ['fist', 'noGesture', 'open', 'pinch', 'waveIn', 'waveOut']
+        self.model = get_model(config)        
+        if config.data_type == "eeg":
+            self.label_ids = ['base', 'left', 'right']
+        else:
+            self.label_ids = ['fist', 'noGesture', 'open', 'pinch', 'waveIn', 'waveOut']
 
         # pl 2 containers:
         self.training_step_outputs = []
@@ -211,7 +214,21 @@ def train(config):
         name=config.experiment_name
     )
 
-    ds_train, ds_val = get_training_set(config, validation=True)
+    if config.data_type == "eeg":
+        ds_train, ds_val, training_keys = get_training_set_eeg(config, validation=True)
+        test_dl = DataLoader(dataset=get_testing_set_eeg(config, training_keys),
+                         worker_init_fn=worker_init_fn,
+                         num_workers=4,
+                         batch_size=config.batch_size,
+                         persistent_workers=True)
+    else:
+        ds_train, ds_val = get_training_set(config, validation=True)
+        test_dl = DataLoader(dataset=get_testing_set(config),
+                        worker_init_fn=worker_init_fn,
+                        num_workers=4,
+                        batch_size=config.batch_size,
+                        persistent_workers=True)
+
     train_dl = DataLoader(dataset=ds_train,
                           worker_init_fn=worker_init_fn,
                           num_workers=config.num_workers,
@@ -223,11 +240,6 @@ def train(config):
                           num_workers=2,
                           batch_size=config.batch_size,
                           persistent_workers=True)
-    test_dl = DataLoader(dataset=get_testing_set(config),
-                         worker_init_fn=worker_init_fn,
-                         num_workers=4,
-                         batch_size=config.batch_size,
-                         persistent_workers=True)
     
     # create pytorch lightening module
     pl_module = PLModule(config)
@@ -256,12 +268,13 @@ def train(config):
     # start training and validation for the specified number of epochs
     trainer.fit(pl_module, train_dl, val_dl)
     # final test step
+    del train_dl, val_dl
     trainer.test(ckpt_path='last', dataloaders=test_dl)
     wandb.finish()
 
     del trainer
     del pl_module
-    del train_dl, val_dl, test_dl
+    del test_dl
     gc.collect()
     torch.cuda.empty_cache()
 
@@ -366,6 +379,7 @@ if __name__ == '__main__':
     parser.add_argument('--precision', type=str, default="32")
 
     # window creation
+    parser.add_argument('--data_type', type=str, default="emg")
     parser.add_argument('--max_samples', type=int, default=599)
     parser.add_argument('--min_samples', type=int, default=76)
     parser.add_argument('--sample_freq', type=int, default=200)

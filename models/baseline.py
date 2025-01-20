@@ -23,12 +23,10 @@ class LSTM(nn.Module):
         
         # Temporal Extraction
         self.lstm = nn.LSTM(in_channels, self.hidden_size, self.num_layers, batch_first=True, dropout=dropout)
-        
         # Classification Head
         self.fc1 = nn.Linear(self.hidden_size, 128)
         self.fc2 = nn.Linear(128, 64)
         self.fc_out = nn.Linear(64, n_classes)
-        
         # Activation and normalization
         self.instance_norm = nn.InstanceNorm1d(self.hidden_size)
         self.activation = nn.ReLU()
@@ -49,7 +47,6 @@ class LSTM(nn.Module):
 
         # Pass the entire batch through the LSTM
         lstm_out, _ = self.lstm(gestures, (h0, c0))
-
         # Use instance normalization on the LSTM output
         lstm_out = self.instance_norm(lstm_out.permute(0, 2, 1)).permute(0, 2, 1)
 
