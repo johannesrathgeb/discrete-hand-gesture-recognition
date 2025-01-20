@@ -6,7 +6,7 @@ import numpy as np
 from sklearn import preprocessing
 import random
 import mne
-from sklearn.preprocessing import MinMaxScaler
+from scipy.signal import butter, lfilter, iirnotch
 
 DATASET_DIR = 'raw_data/eeg-motor-movement/'
 assert DATASET_DIR is not None, "Specify 'EEG Motor Imaginary Movement dataset' location in variable " \
@@ -16,12 +16,12 @@ assert DATASET_DIR is not None, "Specify 'EEG Motor Imaginary Movement dataset' 
 dataset_config = {
     "meta_csv": os.path.join(DATASET_DIR, "eeg-motor-movement-metadata.csv"),
 }
-from scipy.signal import butter, lfilter, iirnotch
+
 class EEGMotorMovementDataset(TorchDataset):
     """
     Basic EEG Motor Imaginary Movement Dataset: loads data from files
     """
-    def __init__(self, grouped_df, fs=160, window_size=0.25, overlap=0.0, max_samples=656, min_samples=476, window_mode="rms", scaling=False):
+    def __init__(self, grouped_df, fs=160, window_size=0.25, overlap=0.0, max_samples=656, min_samples=476, window_mode="rms"):
         """
         @param grouped_df: dataset df grouped by File Path
         @param fs: frequency sample rate in Hz
@@ -36,7 +36,6 @@ class EEGMotorMovementDataset(TorchDataset):
         self.max_samples = max_samples
         self.min_samples = min_samples
         self.max_windows = (self.max_samples - self.window_samples) // self.step_samples + 1
-        self.scaling = scaling
 
         print("max samples", self.max_samples)
         print("max windows", self.max_windows)
@@ -45,28 +44,13 @@ class EEGMotorMovementDataset(TorchDataset):
         start_indices = []
         end_indices = []
 
-        all_data = []
         for folder_path, group in grouped_df:
             for label in group["Label"].unique():
                 label_group = group[group["Label"] == label]
                 labels.extend(label_group["Label"].values)
                 locations.extend(label_group["File_Path"].values)
                 start_indices.extend(label_group["Start_Index"].values)
-                end_indices.extend(label_group["End_Index"].values)
-                if scaling:
-                    for _, row in label_group.iterrows():
-                        file_path = row["File_Path"]
-                        start_idx = row["Start_Index"]
-                        end_idx = row["End_Index"]
-                        eeg_data = self.get_eeg_data(file_path, start_idx, end_idx, str(file_path) + '.csv', True)
-                        all_data.append(eeg_data)
-        if scaling:
-            all_data = np.stack(all_data)  
-            reshaped_x = all_data.reshape(all_data.shape[0], all_data.shape[1] * all_data.shape[2])
-            self.scaler = MinMaxScaler()
-            self.scaler.fit(reshaped_x)  
-            print(f"Scaler fitted: Min={self.scaler.data_min_}, Max={self.scaler.data_max_}")
-            del all_data
+                end_indices.extend(label_group["End_Index"].values)          
 
         labels = np.array(labels)
         locations = np.array(locations)
@@ -97,7 +81,7 @@ class EEGMotorMovementDataset(TorchDataset):
         return np.array(flat_array, dtype=object)
     
 
-    def get_eeg_data(self, file_path, start_idx, end_idx, output_file, padding=False):
+    def get_eeg_data(self, file_path, start_idx, end_idx, output_file):
         raw = mne.io.read_raw_edf(file_path, preload=False, verbose=False)
         
 
@@ -125,14 +109,6 @@ class EEGMotorMovementDataset(TorchDataset):
 
         # Apply Butterworth band-pass filter
         eeg_data = butter_bandpass_filter(eeg_data, lowcut=2, highcut=60, fs=160)
-
-        if padding:
-            num_samples = eeg_data.shape[1]
-            pad_size = self.max_samples - num_samples
-            if pad_size > 0:
-                padding = np.zeros((eeg_data.shape[0], pad_size))
-                eeg_data = np.hstack((eeg_data, padding))
-            eeg_data = eeg_data[:, :self.max_samples]
         return eeg_data 
 
     def get_windows_rms(self, eeg_data):
@@ -194,10 +170,6 @@ class EEGMotorMovementDataset(TorchDataset):
         file_path, label, start_idx, end_idx = self.all_gestures[index]
         # Step 2: Load EMG data from edf file
         emg_data = self.get_eeg_data(file_path, start_idx, end_idx, str(index) + '.csv', False)
-        # if self.scaling:
-        #     eeg_data_scaled_flat = self.scaler.transform(emg_data.reshape(1, -1))
-        #     eeg_data_scaled = eeg_data_scaled_flat.reshape(emg_data.shape)  # Shape: (channels, samples)
-        #     emg_data = eeg_data_scaled
         # Step 3: Create RMS windows and get original length
         match self.window_mode:
             case "rms":
