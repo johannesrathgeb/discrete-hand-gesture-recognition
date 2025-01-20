@@ -7,7 +7,6 @@ import numpy as np
 from sklearn import preprocessing
 import random
 
-
 DATASET_DIR = 'raw_data/EMG-EPN612/'
 assert DATASET_DIR is not None, "Specify 'EMG-EPN612 dataset' location in variable " \
                                 "'DATASET_DIR'. The dataset can be downloaded from this URL:" \
@@ -41,15 +40,6 @@ class BasicEMGEPN612Dataset(TorchDataset):
         labels = []
         locations = []
         gestures = []
-
-        # extract data from df into lists and np.arrays
-        # for file_path, group in grouped_df:
-        #     gesture_labels = group["Label"].values
-        #     labels.extend(gesture_labels)
-        #     gesture_locations = group["Location"].values
-        #     locations.extend(gesture_locations)
-        #     gesture_indices = group["Gesture_Index"].values
-        #     gestures.append((file_path, gesture_indices))
 
         for file_path, group in grouped_df:
             for label in group["Label"].unique():
@@ -160,10 +150,8 @@ class BasicEMGEPN612Dataset(TorchDataset):
         if pad_size > 0:
             padding = np.zeros((emg_data.shape[0], pad_size))
             emg_data = np.hstack((emg_data, padding))
-        
         # Ensure emg_data has contiguous memory layout
         emg_data = emg_data.copy()
-        #print(emg_data.shape)
         # return windows tensor of consistent shape and true number of windows (without padding) 
         return torch.tensor(emg_data, dtype=torch.float32), num_samples
 

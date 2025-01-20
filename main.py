@@ -203,7 +203,28 @@ class CustomEarlyStopping(EarlyStopping):
         # Call the original on_validation_end to handle early stopping
         super().on_train_epoch_end(trainer, pl_module)
 
-def train(config):
+def save_model_weights(pl_module, path):
+    torch.save(pl_module.model.state_dict(), path)
+    print(f"Model weights saved to {path}")
+
+def load_model_weights(pl_module, path, skip_keys=[]):
+    """
+    Load model weights while skipping specific keys (e.g., output layer).
+    :param pl_module: The Lightning module containing the model.
+    :param path: Path to the saved weights file.
+    :param skip_keys: List of keys to skip when loading weights.
+    """
+    state_dict = torch.load(path)
+    model_state_dict = pl_module.model.state_dict()
+    # Filter out the keys to skip
+    filtered_state_dict = {k: v for k, v in state_dict.items() if k not in skip_keys}
+    # Load the filtered state_dict
+    model_state_dict.update(filtered_state_dict)
+    pl_module.model.load_state_dict(model_state_dict)
+
+    print(f"Model weights loaded from {path}, except keys: {skip_keys}")
+
+def train(config, save_path=None, load_path=None):
     # logging is done using wandb
     #TODO: change notes and tags
     wandb_logger = WandbLogger(
@@ -243,6 +264,10 @@ def train(config):
     
     # create pytorch lightening module
     pl_module = PLModule(config)
+    if load_path:
+        # output_layer_keys = ["fc_out.weight", "fc_out.bias"]
+        output_layer_keys = ["fc.weight", "fc.bias"]
+        load_model_weights(pl_module, load_path, output_layer_keys)
 
     #TODO: implement if necessary
     # get model complexity from nessi and log results to wandb
@@ -267,6 +292,8 @@ def train(config):
                          gradient_clip_val=config.gradient_clip)
     # start training and validation for the specified number of epochs
     trainer.fit(pl_module, train_dl, val_dl)
+    if save_path:
+        save_model_weights(pl_module, save_path)
     # final test step
     del train_dl, val_dl
     trainer.test(ckpt_path='last', dataloaders=test_dl)
@@ -376,6 +403,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_workers', type=int, default=12)  # number of workers for training dataloader
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--running_seed', type=int, default=42)
+    parser.add_argument('--update_seed', type=int, default=1)
     parser.add_argument('--precision', type=str, default="32")
 
     # window creation
@@ -426,6 +454,11 @@ if __name__ == '__main__':
     base_experiment_name = args.experiment_name
     for run_id in range(args.cv_runs):
         seed_everything(args.seed)
-        args.running_seed = args.seed + run_id
+        if args.update_seed >= 1:
+            args.running_seed = args.seed + run_id
         args.experiment_name = f"{base_experiment_name}_{args.running_seed}"
-        train(args)
+
+        EEG_LSTM_PATH = "models/weights/eeg_lstm/76.pth"
+        EEG_CNN_LSTM_PATH = "models/weights/eeg_cnn_lstm/76.pth"
+
+        train(args, save_path=None, load_path=EEG_CNN_LSTM_PATH)
