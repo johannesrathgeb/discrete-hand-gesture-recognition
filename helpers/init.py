@@ -1,15 +1,12 @@
 import random
-
 import numpy as np
 import torch
 
-import time
 def worker_init_fn(wid):
     """
     This function is passed to Pytorch dataloader and makes sure
     that python random, numpy and torch are seeded appropriately.
     """
-    #start_time = time.time()
     seed_sequence = np.random.SeedSequence(
         [torch.initial_seed(), wid]
     )
@@ -22,7 +19,6 @@ def worker_init_fn(wid):
 
     py_seed = spawn_get(seed_sequence, 2, dtype=int)
     random.seed(py_seed)
-    #print(f"worker init time: {time.time() - start_time:.2f} seconds")
 
 
 def spawn_get(seedseq, n_entropy, dtype):

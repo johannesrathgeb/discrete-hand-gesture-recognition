@@ -1,12 +1,12 @@
 import os
+import numpy as np
 import torch
 from torch.utils.data import Dataset as TorchDataset
-import pandas as pd
-import numpy as np
-from sklearn import preprocessing
-import random
-import mne
-from scipy.signal import butter, lfilter, iirnotch
+from sklearn.model_selection import train_test_split
+from glob import glob
+import pyedflib
+
+from helpers.utils import preprocess_data
 
 DATASET_DIR = 'raw_data/eeg-motor-movement/'
 assert DATASET_DIR is not None, "Specify 'EEG Motor Imaginary Movement dataset' location in variable " \
@@ -17,251 +17,231 @@ dataset_config = {
     "meta_csv": os.path.join(DATASET_DIR, "eeg-motor-movement-metadata.csv"),
 }
 
-class EEGMotorMovementDataset(TorchDataset):
+# This function is adapted from the EEGMotorImagery repository by rootskar:
+# https://github.com/rootskar/EEGMotorImagery/tree/master (March 2025)
+def load_data(nr_of_subj=109, chunk_data=True, chunks=8, base_folder=DATASET_DIR, sample_rate=160,
+              samples=640, cpu_format=False, preprocessing=False, hp_freq=0.5, bp_low=2, bp_high=60, notch=False,
+              hp_filter=False, bp_filter=False, artifact_removal=False):
+    # Get file paths
+    PATH = base_folder
+    SUBS = glob(PATH + 'S[0-9]*')
+    FNAMES = sorted([x[-4:] for x in SUBS])
+    FNAMES = FNAMES[:nr_of_subj]
+
+    # Remove the subjects with incorrectly annotated data that will be omitted from the final dataset
+    subjects = ['S038', 'S088', 'S089', 'S092', 'S100', 'S104']
+    try:
+        for sub in subjects:
+            FNAMES.remove(sub)
+    except:
+        pass
+
     """
-    Basic EEG Motor Imaginary Movement Dataset: loads data from files
-    """
-    def __init__(self, grouped_df, fs=160, window_size=0.25, overlap=0.0, max_samples=656, min_samples=476, window_mode="rms"):
-        """
-        @param grouped_df: dataset df grouped by File Path
-        @param fs: frequency sample rate in Hz
-        @param window_size: length of window in ms
-        @param overlap: overlap of windows in ms
-        @param max_samples: max sample length in dataset (599 for EMG-EPN612)
-        """  
-        self.fs = fs
-        self.window_mode = window_mode
-        self.window_samples = int(window_size * fs)
-        self.step_samples = int(self.window_samples * (1 - overlap))
-        self.max_samples = max_samples
-        self.min_samples = min_samples
-        self.max_windows = (self.max_samples - self.window_samples) // self.step_samples + 1
-
-        print("max samples", self.max_samples)
-        print("max windows", self.max_windows)
-        labels = []
-        locations = []
-        start_indices = []
-        end_indices = []
-
-        for folder_path, group in grouped_df:
-            for label in group["Label"].unique():
-                label_group = group[group["Label"] == label]
-                labels.extend(label_group["Label"].values)
-                locations.extend(label_group["File_Path"].values)
-                start_indices.extend(label_group["Start_Index"].values)
-                end_indices.extend(label_group["End_Index"].values)          
-
-        labels = np.array(labels)
-        locations = np.array(locations)
-        start_indices = np.array(start_indices)
-        end_indices = np.array(end_indices)
-
-        # Encode labels into integer values, print unique counts
-        le = preprocessing.LabelEncoder()
-        labels = torch.from_numpy(le.fit_transform(labels.reshape(-1)))
-        self.print_unique_labels(labels)   
-
-        # save all data into flat array for later use
-        self.all_gestures = self.create_flat_array(labels, locations, start_indices, end_indices)
-        print(self.all_gestures.shape)
-
-    def print_unique_labels(self, labels):
-        unique_labels, counts = torch.unique(labels, return_counts=True)
-        print("Unique labels and counts:")
-        for label, count in zip(unique_labels.tolist(), counts.tolist()):
-            print(f"Label {label}: {count} occurrences")
-
-    def create_flat_array(self, labels, locations, start_indices, end_indices):
-        flat_array = []
-        label_idx = 0
-        for file_path in locations:
-            flat_array.append([file_path, labels[label_idx], start_indices[label_idx], end_indices[label_idx]])
-            label_idx += 1
-        return np.array(flat_array, dtype=object)
-    
-
-    def get_eeg_data(self, file_path, start_idx, end_idx, output_file):
-        raw = mne.io.read_raw_edf(file_path, preload=False, verbose=False)
-        
-
-        raw_data_segment, times = raw[:, start_idx:end_idx]
-
-        eeg_data = np.array(raw_data_segment)
-        selected_channels = [10, 17, 18, 11, 16, 9, 50, 51]
-        if selected_channels:
-            eeg_data = eeg_data[selected_channels, :]
-
-        def apply_notch_filter(data, freq, fs, quality_factor=30):
-            notch_freq = freq / (fs / 2)  # Normalized frequency
-            b, a = iirnotch(notch_freq, quality_factor)
-            return lfilter(b, a, data, axis=1)
-
-        # Define Butterworth band-pass filter
-        def butter_bandpass_filter(data, lowcut, highcut, fs, order=5):
-            nyquist = 0.5 * fs
-            low = lowcut / nyquist
-            high = highcut / nyquist
-            b, a = butter(order, [low, high], btype='band')
-            return lfilter(b, a, data, axis=1)
-
-        eeg_data = apply_notch_filter(eeg_data, freq=60, fs=160)
-
-        # Apply Butterworth band-pass filter
-        eeg_data = butter_bandpass_filter(eeg_data, lowcut=2, highcut=60, fs=160)
-        return eeg_data 
-
-    def get_windows_rms(self, eeg_data):
-        # calculate number of windows for data length
-        num_samples = eeg_data.shape[1]
-        if num_samples < self.window_samples:
-            num_windows = 1
-        else:
-            num_windows = (num_samples - self.window_samples) // self.step_samples + 1
-
-        rms_windows = []    
-        for i in range(num_windows):
-            # calculate start and end point for window
-            start = i * self.step_samples
-            end = start + self.window_samples
+    @input - label (String)
             
-            # zero-pad window if it's longer than remaining data
-            if end > num_samples:
-                segment = np.pad(eeg_data, ((0, 0), (0, end - num_samples)), mode='constant')
+    Helper method that converts trial labels into integer representations
+
+    @output - data (Numpy array); target labels (Numpy array)
+    """
+
+    def convert_label_to_int(str):
+        if str == 'T1':
+            return 0
+        if str == 'T2':
+            return 1
+        raise Exception("Invalid label %s" % str)
+
+    """
+    @input - data (array); number of chunks to divide the list into (int)
+            
+    Helper method that divides the input list into a given number of arrays
+
+    @output - 2D array of divided input data
+    """
+
+    def divide_chunks(data, chunks):
+        for i in range(0, len(data), chunks):
+            yield data[i:i + chunks]
+
+    executed_trials = '03,07,11'.split(',')
+    imagined_trials = '04,08,12'.split(',')
+    both_trials = executed_trials + imagined_trials
+    file_numbers = imagined_trials
+
+    samples_per_chunk = int(samples / chunks)
+    X = []
+    y = []
+
+    # Iterate over different subjects
+    for subj in FNAMES:
+        # Load the file names for given subject
+        fnames = glob(os.path.join(PATH, subj, subj + 'R*.edf'))
+        fnames = [name for name in fnames if name[-6:-4] in file_numbers]
+        # Iterate over the trials for each subject
+        for file_name in fnames:
+            # Load the file
+            loaded_file = pyedflib.EdfReader(file_name)
+            annotations = loaded_file.readAnnotations()
+            times = annotations[0]
+            durations = annotations[1]
+            tasks = annotations[2]
+
+            # Load the data signals into a buffer
+            signals = loaded_file.signals_in_file
+            # signal_labels = loaded_file.getSignalLabels()
+            sigbufs = np.zeros((signals, loaded_file.getNSamples()[0]))
+            for i in np.arange(signals):
+                sigbufs[i, :] = loaded_file.readSignal(i)
+
+            # initialize the result arrays with preferred shapes
+            if chunk_data:
+                trial_data = np.zeros((15, 64, chunks, samples_per_chunk))
             else:
-                segment = eeg_data[:, start:end]
-            # make sure window has correct length
-            segment = segment[:, :self.window_samples]
+                trial_data = np.zeros((15, 64, samples))
+            labels = []
+            signal_start = 0
+            k = 0
+            # Iterate over tasks in the trial run
+            for i in range(len(times)):
+                # Collects only the 15 non-rest tasks in each run
+                if k == 15:
+                    break
+                current_duration = durations[i]
+                signal_end = signal_start + samples
+                # Skipping tasks where the user was resting
+                if tasks[i] == 'T0':
+                    signal_start += int(sample_rate * current_duration)
+                    continue
+
+                # Iterate over each channel
+                for j in range(len(sigbufs)):
+                    channel_data = sigbufs[j][signal_start:signal_end]
+                    if preprocessing:
+                        channel_data = preprocess_data(channel_data, sample_rate=sample_rate, ac_freq=60,
+                                                       hp_freq=hp_freq, bp_low=bp_low, bp_high=bp_high, notch=notch,
+                                                       hp_filter=hp_filter, bp_filter=bp_filter,
+                                                       artifact_removal=artifact_removal)
+                    if chunk_data:
+                        channel_data = list(divide_chunks(channel_data, samples_per_chunk))
+                    # Add data for the current channel and task to the result
+                    trial_data[k][j] = channel_data
+
+                # add label(s) for the current task to the result
+                if chunk_data:
+                    # multiply the labels by the chunk size for chunked mode
+                    labels.extend([convert_label_to_int(tasks[i])] * chunks)
+                else:
+                    labels.append(convert_label_to_int(tasks[i]))
+
+                signal_start += int(sample_rate * current_duration)
+                k += 1
+
+            # Add labels and data for the current run into the final output numpy arrays
+            y.extend(labels)
+            if cpu_format:
+                if chunk_data:
+                    # (15, 64, 8, 80) => (15, 64, 80, 8) => (15, 8, 80, 64) => (120, 80, 64)
+                    X.extend(trial_data.swapaxes(2, 3).swapaxes(1, 3).reshape((-1, samples_per_chunk, 64)))
+                else:
+                    # (15, 64, 640) => (15, 640, 64)
+                    X.extend(trial_data.swapaxes(1, 2))
+            else:
+                if chunk_data:
+                    # (15, 64, 8, 80) => (15, 8, 64, 80) => (120, 64, 80)
+                    X.extend(trial_data.swapaxes(1, 2).reshape((-1, 64, samples_per_chunk)))
+                else:
+                    # (15, 64, 640)
+                    X.extend(trial_data)
+
+    # Shape the final output arrays to the correct format
+    X = np.stack(X)
+    y = np.array(y).reshape((-1, 1))
+    return X, y
+
+class EEGMotorMovementDataset(TorchDataset):
+    def __init__(self, X, y, rms_feature=False):
+        self.X = X
+        self.y = y
+        self.rms_feature = rms_feature
+        self.window_samples = 4
+        self.num_windows = 160
+        self.fs = 160
+        
+    def get_windows_rms(self, eeg_data):   
+        rms_windows = []    
+        for i in range(self.num_windows):
+            # calculate start and end point for window
+            start = i * self.window_samples
+            end = start + self.window_samples          
+            segment = eeg_data[:, start:end]
             # Compute RMS for each channel in the window
-            rms_feature = np.sqrt(np.mean(np.square(segment), axis=1))  
+            segment = segment
+            rms_feature = np.sqrt(np.mean(np.square(segment.cpu().numpy()), axis=1))  
             rms_windows.append(rms_feature)
         windows_np = np.array(rms_windows) 
-
-        if len(windows_np) > self.max_windows:
-            # Trim to max_windows if there are too many
-            windows_np = windows_np[:self.max_windows]
-            num_windows = self.max_windows
-        # pad array of window to max number of windows in dataset to have consistent shapes
-        pad_size = self.max_windows - len(windows_np)
-        if pad_size > 0:
-            padding = np.zeros((pad_size, windows_np.shape[1]))  # Pad with zeros
-            windows_np = np.vstack((windows_np, padding))
-        
         # return windows tensor of consistent shape and true number of windows (without padding) 
-        return torch.tensor(windows_np, dtype=torch.float32), num_windows
-
-    def get_high_pass_filtered_data(self, eeg_data):
-        num_samples = eeg_data.shape[1]
-        pad_size = self.max_samples - num_samples
-        if pad_size > 0:
-            padding = np.zeros((eeg_data.shape[0], pad_size))
-            eeg_data = np.hstack((eeg_data, padding))
-        
-        if num_samples > self.max_samples:
-            num_samples = self.max_samples
-            eeg_data = eeg_data[:, :self.max_samples]
-        # Ensure emg_data has contiguous memory layout
-        eeg_data = eeg_data.copy()
-        # return windows tensor of consistent shape and true number of windows (without padding) 
-        return torch.tensor(eeg_data, dtype=torch.float32), num_samples
-
-    def __getitem__(self, index):
-        # Step 1: Fetch file path, gesture index, label and location
-        file_path, label, start_idx, end_idx = self.all_gestures[index]
-        # Step 2: Load EMG data from edf file
-        emg_data = self.get_eeg_data(file_path, start_idx, end_idx, str(index) + '.csv', False)
-        # Step 3: Create RMS windows and get original length
-        match self.window_mode:
-            case "rms":
-                windows, original_length = self.get_windows_rms(emg_data)
-            case "highpass":
-                windows, original_length = self.get_high_pass_filtered_data(emg_data)
-            case _:  # Default case
-                windows, original_length = self.get_windows_rms(emg_data)
-
-        return windows, original_length, label
-
-    def __len__(self):
-        return len(self.all_gestures)
-
-
-def get_training_set_eeg(config, validation=True):
-    """
-    @param validation: flag wether training set should be split into train/val
-    @return: TorchDataset with Training Samples, TorchDataset with Validation Samples (will be None if validation=False)
-    """
-    meta_csv = dataset_config['meta_csv']
-    df = pd.read_csv(meta_csv)
-    df['Folder_Path'] = df['File_Path'].apply(lambda x: os.path.dirname(x))
-    grouped = df.groupby('Folder_Path')
-    num_groups = len(grouped)
-    group_keys = list(grouped.groups.keys())  # Get the group keys (folder paths)
-
-    # Shuffle group keys randomly
-    original_state = random.getstate()
-    random.seed(config.running_seed)
-    random.shuffle(group_keys)
-    # random.setstate(original_state)
-
-
-
-    split_index = int(num_groups * 0.8)  # Calculate 80% index
-    selected_groups = group_keys[:split_index]  # Select the first 80%
-
-
-    # Filter the original DataFrame to include only the selected groups
-    grouped = df[df['Folder_Path'].isin(selected_groups)]
-    grouped = grouped.groupby('Folder_Path')
+        return torch.tensor(windows_np, dtype=torch.float32), self.num_windows
     
-    if validation:
-        # Get all unique groups (users) and nsure there are enough users for both splits
-        all_groups = list(grouped.groups.keys())
-        # print(len(all_groups), config.n_train_users, config.n_val_users)
-        assert len(all_groups) >= (config.n_train_users + config.n_val_users), \
-            "Not enough unique users for the specified training and validation splits."
+    def __len__(self):
+        return len(self.X)
 
-        # Randomly select training users
-        selected_train_groups = random.sample(all_groups, config.n_train_users)
-        # Remaining groups after selecting training users
-        remaining_groups = [group for group in all_groups if group not in selected_train_groups]
-        # Randomly select validation users from the remaining groups
-        selected_val_groups = random.sample(remaining_groups, config.n_val_users)
-        # Filter the DataFrame for training users and validation users
-        training_df = grouped.filter(lambda x: x.name in selected_train_groups)
-        validation_df = grouped.filter(lambda x: x.name in selected_val_groups)
+    def __getitem__(self, idx):
+        x_data = torch.tensor(self.X[idx], dtype=torch.float32)
+        # Make sure y is a single integer (no extra dim)
+        y_data = torch.tensor(self.y[idx], dtype=torch.long).squeeze()
 
-        validation_df = validation_df.groupby("Folder_Path")
-        training_df = training_df.groupby("Folder_Path")
-        ds_training = EEGMotorMovementDataset(training_df, window_mode=config.window_mode, window_size=config.window_length)
-        ds_validation = EEGMotorMovementDataset(validation_df, window_mode=config.window_mode, window_size=config.window_length)
+        if self.rms_feature:
+            selected_channels = [43, 59, 54, 20, 45, 53, 58, 52] # rms 0.025
+        else:
+            selected_channels = [3, 10, 4, 11, 33, 34, 18, 2] # default
+        
+        if self.rms_feature:
+            x_data, length = self.get_windows_rms(x_data)
+            if selected_channels:
+                x_data = x_data[:, selected_channels]
+        else:
+            length = x_data.shape[1]
+            if selected_channels:
+                x_data = x_data[selected_channels, :]
+        return x_data, length, y_data
 
-        random.setstate(original_state)
-        return ds_training, ds_validation, selected_groups
-    else:
-        ds_training = EEGMotorMovementDataset(grouped, window_mode=config.window_mode, window_size=config.window_length)
-        random.setstate(original_state)
-        return ds_training, None
-
-def get_testing_set_eeg(config, training_group_keys):
+def get_train_val_test_split(X, y, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1, random_seed=42, rms_feature=False):
     """
+    Split arrays (X and y) into random train, val, test subsets.
+
+    Args:
+        X: numpy array or list-like of shape (N, ...)
+        y: numpy array or list-like of shape (N,)
+        train_ratio: float between (0, 1)
+        val_ratio: float between (0, 1)
+        test_ratio: float between (0, 1)
+        random_seed: int or None, for reproducible output across multiple calls
+        rms_feature: bool, if True, use RMS feature extraction
+
     Returns:
-    Single TorchDataset with Testing Samples
+        train_dataset, val_dataset, test_dataset
     """
-    meta_csv = dataset_config['meta_csv']
-    df = pd.read_csv(meta_csv)
-    df['Folder_Path'] = df['File_Path'].apply(lambda x: os.path.dirname(x))
-    grouped = df.groupby('Folder_Path')
-    group_keys = list(grouped.groups.keys())  # Get the group keys (folder paths)
-
-    original_state = random.getstate()
-    random.seed(config.running_seed)
-    random.shuffle(group_keys)
-
-    testing_group_keys = [key for key in group_keys if key not in training_group_keys]
-
-    # Filter the original DataFrame to include only the selected groups
-    grouped = df[df['Folder_Path'].isin(testing_group_keys)]
-    grouped = grouped.groupby('Folder_Path')
-    ds_testing = EEGMotorMovementDataset(grouped, window_mode=config.window_mode, window_size=config.window_length)
-    random.setstate(original_state)
-    return ds_testing
+    assert abs((train_ratio + val_ratio + test_ratio) - 1.0) < 1e-8, \
+        "train_ratio + val_ratio + test_ratio must equal 1."
+    
+    X_train, X_temp, y_train, y_temp = train_test_split(
+            X,
+            y,
+            test_size=(1.0 - train_ratio),
+            random_state=random_seed,
+            stratify=y
+        )
+    
+    val_portion = val_ratio / (val_ratio + test_ratio)
+    X_val, X_test, y_val, y_test = train_test_split(
+            X_temp,
+            y_temp,
+            test_size=(1.0 - val_portion),
+            random_state=random_seed,
+            stratify=y_temp
+        )
+        
+    train_dataset = EEGMotorMovementDataset(X_train, y_train, rms_feature)
+    val_dataset   = EEGMotorMovementDataset(X_val,   y_val, rms_feature)
+    test_dataset  = EEGMotorMovementDataset(X_test,  y_test, rms_feature)
+    return train_dataset, val_dataset, test_dataset
