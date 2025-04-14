@@ -195,14 +195,14 @@ class EEGMotorMovementDataset(TorchDataset):
         else:
             selected_channels = [3, 10, 4, 11, 33, 34, 18, 2] # default
         
+        if selected_channels:
+                x_data = x_data[selected_channels, :]
+
         if self.rms_feature:
             x_data, length = self.get_windows_rms(x_data)
-            if selected_channels:
-                x_data = x_data[:, selected_channels]
         else:
             length = x_data.shape[1]
-            if selected_channels:
-                x_data = x_data[selected_channels, :]
+            
         return x_data, length, y_data
 
 def get_train_val_test_split(X, y, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1, random_seed=42, rms_feature=False):
