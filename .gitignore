@@ -1,10 +1,7 @@
-raw_data/grabmyo/
-raw_data/EMG-EPN612/testingJSON
-raw_data/EMG-EPN612/trainingJSON
-raw_data/eeg-motor-movement/
 wandb/
 DISCRETE-HAND-GESTURE-RECOGNITION/
 exploration_and_testing/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
