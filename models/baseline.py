@@ -30,7 +30,6 @@ class LSTM(nn.Module):
         self.instance_norm_1 = nn.InstanceNorm1d(128)
         self.instance_norm_2 = nn.InstanceNorm1d(64)
         self.activation = nn.ReLU()
-        self.sigmoid = nn.Sigmoid()
 
         self.apply(initialize_weights)
 
@@ -57,8 +56,8 @@ class LSTM(nn.Module):
         x = self.fc2(x)
         x = self.activation(x)
         x = self.instance_norm_2(x)
-        logits = self.fc_out(x)
-        return logits
+        out = self.fc_out(x)
+        return out
     
 class CNN_LSTM(nn.Module):
     def __init__(self, hidden_size=128, in_channels=8, n_classes=6, num_layers=3):
@@ -72,14 +71,15 @@ class CNN_LSTM(nn.Module):
             lstm_layers (int): Number of LSTM layers.
         """
         super(CNN_LSTM, self).__init__()
-        
         # 1D Convolutional Layer
-        self.conv1d = nn.Conv1d(in_channels=in_channels, out_channels=hidden_size, kernel_size=3, padding=1, stride=1) # No stride because data already is in 200Hz
+        self.conv1d = nn.Conv1d(in_channels=in_channels, out_channels=hidden_size, kernel_size=3, padding=1, stride=1) 
+        self.downpool = nn.MaxPool1d(kernel_size=2, stride=2)
         self.relu = nn.ReLU()
         self.batch_norm = nn.BatchNorm1d(hidden_size)
         
         # LSTM Layers
         self.lstm = nn.LSTM(input_size=hidden_size, hidden_size=hidden_size, num_layers=num_layers, batch_first=True)
+
         self.layer_norm = nn.LayerNorm(hidden_size)
         # Fully Connected Layer for Classification
         self.fc = nn.Linear(hidden_size, n_classes)
@@ -92,20 +92,31 @@ class CNN_LSTM(nn.Module):
         """
         # Apply 1D Convolution
         gestures = self.conv1d(gestures)  # Shape: (batch_size, hidden_size, sequence_length)
-        gestures = self.relu(gestures)
+        gestures = self.downpool(gestures)  # Downsample the output of conv1d
         gestures = self.batch_norm(gestures)
+        gestures = self.relu(gestures)
+        
 
         # Transpose for LSTM (batch_size, sequence_length, hidden_size)
         gestures = gestures.transpose(1, 2)
         # LSTM Forward
-        lstm_out, _ = self.lstm(gestures)        
+        lstm_out, _ = self.lstm(gestures)    
 
         # Apply Layer Normalization
         lstm_out = self.layer_norm(lstm_out)
 
-        # Use the last time-step output for classification
+        # Recalculate sequence lengths:
+        #  after Conv1d
+        k_c = self.conv1d.kernel_size[0]
+        p_c = self.conv1d.padding[0]
+        s_c = self.conv1d.stride[0]
+        lengths = ((lengths + 2 * p_c - (k_c - 1) - 1) // s_c) + 1
+        # after Pooling
+        kp = self.downpool.kernel_size
+        sp = self.downpool.stride if self.downpool.stride is not None else kp
+        lengths = ((lengths - (kp - 1) - 1) // sp) + 1
+
         out = lstm_out[torch.arange(lstm_out.size(0)), lengths - 1]
-        
         # Fully connected layer
         logits = self.fc(out)  # Shape: (batch_size, num_classes)
         return logits

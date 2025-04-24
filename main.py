@@ -4,7 +4,7 @@ from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning import seed_everything
 import torch
 from torch.utils.data import DataLoader
-import torch.nn.functional as F
+import torch.nn as nn
 import argparse
 import gc
 import wandb
@@ -18,6 +18,7 @@ class PLModule(pl.LightningModule):
     def __init__(self, config):
         super().__init__()
         self.config = config  # results from argparse, contains all configurations for our experiment
+        self.loss_fn = nn.CrossEntropyLoss()  # loss function for classification
 
         # the baseline model
         self.model = get_model(config)        
@@ -66,7 +67,7 @@ class PLModule(pl.LightningModule):
         x, lengths, labels = train_batch
         y_hat = self.model(x, lengths)
 
-        samples_loss = F.cross_entropy(y_hat, labels, reduction="none")
+        samples_loss = self.loss_fn(y_hat, labels)
         loss = samples_loss.mean()
 
         self.log("lr", self.trainer.optimizers[0].param_groups[0]['lr'])
@@ -81,7 +82,7 @@ class PLModule(pl.LightningModule):
         x, lengths, labels = val_batch
         y_hat = self.forward(x, lengths)
 
-        samples_loss = F.cross_entropy(y_hat, labels, reduction="none")
+        samples_loss = self.loss_fn(y_hat, labels)
         loss = samples_loss.mean()
         # for computing accuracy
         _, preds = torch.max(y_hat, dim=1)
@@ -118,7 +119,7 @@ class PLModule(pl.LightningModule):
         x, lengths, labels = test_batch
         y_hat = self.model(x, lengths)
 
-        samples_loss = F.cross_entropy(y_hat, labels, reduction="none")
+        samples_loss = self.loss_fn(y_hat, labels)
         loss = samples_loss.mean()
         # for computing accuracy
         _, preds = torch.max(y_hat, dim=1)
@@ -218,30 +219,50 @@ def train(config, save_path=None, load_path=None, X_eeg=None, y_eeg=None):
 
     if config.data_type == "eeg":
         ds_train, ds_val, ds_test = get_train_val_test_split(X=X_eeg, y=y_eeg, rms_feature=args.window_mode=="rms", random_seed=config.running_seed)
-        test_dl = DataLoader(dataset=ds_test,
-                         worker_init_fn=worker_init_fn,
-                         num_workers=4,
-                         batch_size=config.batch_size,
-                         persistent_workers=True)
+        if config.tuning_split:
+            test_dl = DataLoader(dataset=ds_val,
+                            worker_init_fn=worker_init_fn,
+                            num_workers=4,
+                            batch_size=config.batch_size,
+                            persistent_workers=True,
+                            prefetch_factor=10)
+        else:
+            test_dl = DataLoader(dataset=ds_test,
+                            worker_init_fn=worker_init_fn,
+                            num_workers=4,
+                            batch_size=config.batch_size,
+                            persistent_workers=True,
+                            prefetch_factor=10)
     else:
         ds_train, ds_val = get_training_set(config, validation=True)
-        test_dl = DataLoader(dataset=get_testing_set(config),
-                        worker_init_fn=worker_init_fn,
-                        num_workers=4,
-                        batch_size=config.batch_size,
-                        persistent_workers=True)
+        if config.tuning_split:
+            test_dl = DataLoader(dataset=ds_val,
+                            worker_init_fn=worker_init_fn,
+                            num_workers=4,
+                            batch_size=config.batch_size,
+                            persistent_workers=True,
+                            prefetch_factor=10)
+        else:
+            test_dl = DataLoader(dataset=get_testing_set(config),
+                            worker_init_fn=worker_init_fn,
+                            num_workers=4,
+                            batch_size=config.batch_size,
+                            persistent_workers=True,
+                            prefetch_factor=10)
 
     train_dl = DataLoader(dataset=ds_train,
                           worker_init_fn=worker_init_fn,
                           num_workers=config.num_workers,
                           batch_size=config.batch_size,
                           persistent_workers=True,
-                          shuffle=True)
+                          shuffle=True,
+                          prefetch_factor=10)
     val_dl = DataLoader(dataset=ds_val,
                           worker_init_fn=worker_init_fn,
                           num_workers=2,
                           batch_size=config.batch_size,
-                          persistent_workers=True)
+                          persistent_workers=True,
+                          prefetch_factor=10)
     
     # create pytorch lightening module
     pl_module = PLModule(config)
@@ -336,6 +357,8 @@ def evaluate_args(parser):
     # pretraining
     parser.add_argument('--save_weights', action='store_true') # save model weights
     parser.add_argument('--load_weights', action='store_true') # load model weights
+    
+    parser.add_argument('--tuning_split', action='store_true') # use validation set for testing (for hyperparameter tuning)
 
     return parser.parse_args()
 

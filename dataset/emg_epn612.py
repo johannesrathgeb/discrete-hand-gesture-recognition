@@ -182,21 +182,29 @@ def get_training_set(config, validation=True):
     df = pd.read_csv(meta_csv)
     grouped = df.groupby("File_Path")
 
+    if config.tuning_split:
+        # 80/20 split for tuning
+        n_train_users = 245
+        n_val_users = 61
+    else:
+        n_train_users = config.n_train_users
+        n_val_users = config.n_val_users
+
     if validation:
         original_state = random.getstate()
         random.seed(config.running_seed)
 
         # Get all unique groups (users) and nsure there are enough users for both splits
         all_groups = list(grouped.groups.keys())
-        assert len(all_groups) >= (config.n_train_users + config.n_val_users), \
+        assert len(all_groups) >= (n_train_users + n_val_users), \
             "Not enough unique users for the specified training and validation splits."
 
         # Randomly select training users
-        selected_train_groups = random.sample(all_groups, config.n_train_users)
+        selected_train_groups = random.sample(all_groups, n_train_users)
         # Remaining groups after selecting training users
         remaining_groups = [group for group in all_groups if group not in selected_train_groups]
         # Randomly select validation users from the remaining groups
-        selected_val_groups = random.sample(remaining_groups, config.n_val_users)
+        selected_val_groups = random.sample(remaining_groups, n_val_users)
         # Filter the DataFrame for training users and validation users
         training_df = grouped.filter(lambda x: x.name in selected_train_groups)
         validation_df = grouped.filter(lambda x: x.name in selected_val_groups)
