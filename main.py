@@ -21,7 +21,9 @@ class PLModule(pl.LightningModule):
         self.loss_fn = nn.CrossEntropyLoss()  # loss function for classification
 
         # the baseline model
-        self.model = get_model(config)        
+        self.model = get_model(config)    
+        total_params = sum(p.numel() for p in self.model.parameters())
+        print(f"Total parameters: {total_params}")    
         if config.data_type == "eeg":
             self.label_ids = ['left', 'right']
         else:
@@ -219,30 +221,23 @@ def train(config, save_path=None, load_path=None, X_eeg=None, y_eeg=None):
 
     if config.data_type == "eeg":
         ds_train, ds_val, ds_test = get_train_val_test_split(X=X_eeg, y=y_eeg, rms_feature=args.window_mode=="rms", random_seed=config.running_seed)
-        if config.tuning_split:
-            test_dl = DataLoader(dataset=ds_val,
-                            worker_init_fn=worker_init_fn,
-                            num_workers=4,
-                            batch_size=config.batch_size,
-                            persistent_workers=True,
-                            prefetch_factor=10)
-        else:
-            test_dl = DataLoader(dataset=ds_test,
+        test_dl = DataLoader(dataset=ds_test,
                             worker_init_fn=worker_init_fn,
                             num_workers=4,
                             batch_size=config.batch_size,
                             persistent_workers=True,
                             prefetch_factor=10)
     else:
-        ds_train, ds_val = get_training_set(config, validation=True)
         if config.tuning_split:
-            test_dl = DataLoader(dataset=ds_val,
+            ds_train, ds_val, ds_test = get_training_set(config, validation=True)
+            test_dl = DataLoader(dataset=ds_test,
                             worker_init_fn=worker_init_fn,
                             num_workers=4,
                             batch_size=config.batch_size,
                             persistent_workers=True,
                             prefetch_factor=10)
         else:
+            ds_train, ds_val = get_training_set(config, validation=True)
             test_dl = DataLoader(dataset=get_testing_set(config),
                             worker_init_fn=worker_init_fn,
                             num_workers=4,
@@ -358,7 +353,7 @@ def evaluate_args(parser):
     parser.add_argument('--save_weights', action='store_true') # save model weights
     parser.add_argument('--load_weights', action='store_true') # load model weights
     
-    parser.add_argument('--tuning_split', action='store_true') # use validation set for testing (for hyperparameter tuning)
+    parser.add_argument('--tuning_split', action='store_true') # use for finetuning model on EMG data
 
     return parser.parse_args()
 
@@ -382,7 +377,7 @@ if __name__ == '__main__':
         if args.model == "lstm":
             load_path = EEG_LSTM_PATH + "47" + ".pth"
         else:
-            load_path = EEG_CNN_LSTM_PATH + "42" + ".pth"
+            load_path = EEG_CNN_LSTM_PATH + "45" + ".pth"
 
     # load eeg data into memory here to avoid loading it for each run
     if args.data_type == "eeg":

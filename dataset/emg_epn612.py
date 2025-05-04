@@ -183,9 +183,10 @@ def get_training_set(config, validation=True):
     grouped = df.groupby("File_Path")
 
     if config.tuning_split:
-        # 80/20 split for tuning
+        # 80/10/10 split for tuning
         n_train_users = 245
-        n_val_users = 61
+        n_val_users = 30
+        n_test_users = 31
     else:
         n_train_users = config.n_train_users
         n_val_users = config.n_val_users
@@ -205,6 +206,13 @@ def get_training_set(config, validation=True):
         remaining_groups = [group for group in all_groups if group not in selected_train_groups]
         # Randomly select validation users from the remaining groups
         selected_val_groups = random.sample(remaining_groups, n_val_users)
+
+        if config.tuning_split:
+            selected_test_groups = [group for group in remaining_groups if group not in selected_val_groups]
+            test_df = grouped.filter(lambda x: x.name in selected_test_groups)
+            test_df = test_df.groupby("File_Path")
+            ds_test = EMGEPN612Dataset(test_df, config.sample_freq, config.window_length, config.window_overlap, config.max_samples, config.min_samples, 50, config.window_mode)
+
         # Filter the DataFrame for training users and validation users
         training_df = grouped.filter(lambda x: x.name in selected_train_groups)
         validation_df = grouped.filter(lambda x: x.name in selected_val_groups)
@@ -215,7 +223,10 @@ def get_training_set(config, validation=True):
         ds_validation = EMGEPN612Dataset(validation_df, config.sample_freq, config.window_length, config.window_overlap, config.max_samples, config.min_samples, 50, config.window_mode)
 
         random.setstate(original_state)
-        return ds_training, ds_validation
+        if config.tuning_split:
+            return ds_training, ds_validation, ds_test
+        else:
+            return ds_training, ds_validation
     else:
         ds_training = EMGEPN612Dataset(grouped, config.sample_freq, config.window_length, config.window_overlap, config.max_samples, config.min_samples, config.n_reps, config.window_mode)
         return ds_training, None

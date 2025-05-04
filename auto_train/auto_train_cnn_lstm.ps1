@@ -10,7 +10,7 @@ foreach ($TRAIN_USERS in $TRAIN_USERS_LIST) {
         Write-Host "Starting script with --n_train_users=$TRAIN_USERS, --n_reps=$REPS, --experiment_name=$EXPERIMENT_NAME, and --group_name=$GROUP_NAME..."
 
         # Call the Python script
-        python -u "main.py" --n_train_users=$TRAIN_USERS --n_reps=$REPS --experiment_name=$EXPERIMENT_NAME --group_name=$GROUP_NAME --window_mode=raw --model=cnn-lstm --lr=1e-3 --optimizer=adamw --scheduler=step --optimzer_step=25 --optimizer_gamma=0.5 --es_start_epoch=30 --n_epochs=30 --gradient_clip=0.5 --tags EMG CNN-LSTM UNTRAINED
+        python -u "main.py" --n_train_users=$TRAIN_USERS --n_reps=$REPS --experiment_name=$EXPERIMENT_NAME --group_name=$GROUP_NAME --window_mode=raw --model=cnn-lstm --lr=1e-3 --optimizer=adamw --scheduler=step --optimzer_step=25 --optimizer_gamma=0.5 --es_start_epoch=30 --n_epochs=300 --gradient_clip=0.5 --tags EMG CNN-LSTM UNTRAINED
         
         # Check if the Python script exited successfully
         if ($LASTEXITCODE -ne 0) {
