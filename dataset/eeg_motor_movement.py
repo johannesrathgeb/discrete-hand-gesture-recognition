@@ -191,9 +191,9 @@ class EEGMotorMovementDataset(TorchDataset):
         y_data = torch.tensor(self.y[idx], dtype=torch.long).squeeze()
 
         if self.rms_feature:
-            selected_channels = [43, 59, 54, 20, 45, 53, 58, 52] # rms 0.025
+            selected_channels = [43, 59, 54, 20, 45, 53, 58, 52] # rms 0.025 ['T10', 'Po8', 'P8', 'Cp6', 'Tp8', 'P6', 'Po4', 'P4']
         else:
-            selected_channels = [3, 10, 4, 11, 33, 34, 18, 2] # default
+            selected_channels = [3, 10, 4, 11, 33, 34, 18, 2] # default ['Fcz', 'Cz', 'Fc2', 'C2', 'Fz', 'F2', 'Cp2', 'Fc1']
         
         if selected_channels:
                 x_data = x_data[selected_channels, :]
